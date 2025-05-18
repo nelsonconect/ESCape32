@@ -33,29 +33,33 @@
 	XX(12, val, duty_ramp) \
 	XX(13, val, duty_rate) \
 	XX(14, val, duty_drag) \
-	XX(15, val, throt_mode) \
-	XX(16, val, throt_set) \
-	XX(17, val, throt_cal) \
-	XX(18, val, throt_min) \
-	XX(19, val, throt_mid) \
-	XX(20, val, throt_max) \
-	XX(21, val, analog_min) \
-	XX(22, val, analog_max) \
-	XX(23, val, input_mode) \
-	XX(24, val, input_chid) \
-	XX(25, val, telem_mode) \
-	XX(26, val, telem_phid) \
-	XX(27, val, telem_poles) \
-	XX(28, val, prot_stall) \
-	XX(29, val, prot_temp) \
-	XX(30, val, prot_volt) \
-	XX(31, val, prot_cells) \
-	XX(32, val, prot_curr) \
-	XX(33, str, music) \
-	XX(34, val, volume) \
-	XX(35, val, beacon) \
-	XX(36, val, bec) \
-	XX(37, val, led) \
+	XX(15, val, duty_lock) \
+	XX(16, val, throt_mode) \
+	XX(17, val, throt_rev) \
+	XX(18, val, throt_brk) \
+	XX(19, val, throt_set) \
+	XX(20, val, throt_cal) \
+	XX(21, val, throt_min) \
+	XX(22, val, throt_mid) \
+	XX(23, val, throt_max) \
+	XX(24, val, analog_min) \
+	XX(25, val, analog_max) \
+	XX(26, val, input_mode) \
+	XX(27, val, input_chid) \
+	XX(28, val, telem_mode) \
+	XX(29, val, telem_phid) \
+	XX(30, val, telem_poles) \
+	XX(31, val, prot_stall) \
+	XX(32, val, prot_temp) \
+	XX(33, val, prot_sens) \
+	XX(34, val, prot_volt) \
+	XX(35, val, prot_cells) \
+	XX(36, val, prot_curr) \
+	XX(37, str, music) \
+	XX(38, val, volume) \
+	XX(39, val, beacon) \
+	XX(40, val, bec) \
+	XX(41, val, led) \
 
 static int beep = -1;
 
@@ -120,7 +124,7 @@ static int setbeepval(int val) {
 	return val;
 }
 
-int execcmd(char *buf) {
+int execcmd(char *str) {
 	static const char *const cmds[] = {"help", "info", "show", "get", "set", "save", "reset", "play", "throt", "beep", 0};
 	static const char *const keys[] = {
 #define XX(idx, type, key) #key,
@@ -128,10 +132,10 @@ CFG_MAP(XX)
 #undef XX
 	0};
 	char *args[10];
-	int narg = split(buf, args, 10, " \t\r\n");
+	int narg = split(str, args, 10, " \t\r\n");
 	if (!narg) return 0;
 	int val;
-	char *pos = buf;
+	char *pos = str;
 	switch (getidx(args[0], cmds)) {
 		case 0: // 'help'
 			appendstr(&pos,
@@ -151,10 +155,16 @@ CFG_MAP(XX)
 			if (narg != 1) goto error;
 			appendstr(&pos, "ESCape32 rev");
 			appendval(&pos, setbeepval(cfg.revision));
+			appendstr(&pos, ".");
+			appendval(&pos, cfg.revpatch);
 			appendstr(&pos, " [");
-			appendstr(&pos, cfg.target_name);
+			appendstr(&pos, cfg.name);
 			appendstr(&pos, "]\nTemp: ");
-			appendval(&pos, temp);
+			appendval(&pos, temp1);
+			if (temp2) {
+				appendstr(&pos, "C, ext ");
+				appendval(&pos, temp2);
+			}
 			appendstr(&pos, "C\nVolt: ");
 			appenddec(&pos, volt);
 			appendstr(&pos, "V\nCurr: ");
@@ -228,8 +238,8 @@ CFG_MAP(XX)
 			goto error;
 	}
 	appendstr(&pos, "OK\n");
-	return pos - buf;
+	return pos - str;
 error:
 	appendstr(&pos, "ERROR\n");
-	return pos - buf;
+	return pos - str;
 }

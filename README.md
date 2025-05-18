@@ -12,11 +12,11 @@ Features
 + Analog/serial/iBUS/SBUS/SBUS2/CRSF input mode
 + KISS/iBUS/S.Port/CRSF telemetry
 + DSHOT 3D mode, turtle mode, beacon, LED, programming
-+ Sine startup mode (crawler mode), brushed mode
++ Sine startup mode, brushed mode, hybrid mode (sensored/sensorless)
 + Proportional brake, drag brake
-+ Temperature/voltage/current protection
++ Temperature/voltage/current/stall protection
 + Variable PWM frequency, active freewheeling
-+ Customizable startup music
++ Customizable startup music/sounds
 
 
 Installation
@@ -47,7 +47,7 @@ Use `LIBOPENCM3_DIR` to specify a path to LibOpenCM3 if it is not in the system 
 
 ```
 git clone https://github.com/libopencm3/libopencm3.git
-make -C libopencm3 TARGETS='stm32/f0 stm32/g0 stm32/g4'
+make -C libopencm3 TARGETS='stm32/f0 stm32/g0 stm32/g4 stm32/l4'
 cmake -B build -D LIBOPENCM3_DIR=libopencm3
 ```
 
@@ -70,3 +70,11 @@ To flash a particular target using an ST-LINK programmer, run:
 ```
 make flash-<target>
 ```
+
+
+Building on GitHub
+------------------
+
++ Fork the repository.
++ Go to _Actions_.
++ Run the _Build ESCape32_ workflow.

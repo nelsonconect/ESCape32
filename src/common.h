@@ -49,19 +49,15 @@
 #define IO_ANALOG 0
 #endif
 
-#ifdef ANALOG_CHAN
-#define AIN_CHAN ANALOG_CHAN
-#elif defined IO_PA6
-#define AIN_CHAN 6
-#else
-#define AIN_CHAN 2
-#endif
+#define GPIO(port, name) _GPIO(port, name)
+#define _GPIO(port, name) __GPIO(port, name)
+#define __GPIO(port, name) GPIO##port##_##name
 
 typedef struct {
 	const uint16_t id;
 	const char revision;
-	const char target_type;
-	const char target_name[15];
+	const char revpatch;
+	const char name[15];
 	const char _null;
 	char arm;
 	char damp;
@@ -78,7 +74,10 @@ typedef struct {
 	char duty_ramp;
 	char duty_rate;
 	char duty_drag;
+	char duty_lock;
 	char throt_mode;
+	char throt_rev;
+	char throt_brk;
 	char throt_set;
 	char throt_cal;
 	uint16_t throt_min;
@@ -93,9 +92,10 @@ typedef struct {
 	char telem_poles;
 	uint16_t prot_stall;
 	char prot_temp;
+	char prot_sens;
 	char prot_volt;
 	char prot_cells;
-	char prot_curr;
+	uint16_t prot_curr;
 	char music[256];
 	char volume;
 	char beacon;
@@ -107,29 +107,32 @@ typedef struct {
 	int Kp, Ki, Kd, Li, i, x;
 } PID;
 
-extern char _cfg[], _cfg_start[], _cfg_end[], _rom[], _ram[], _boot[], _vec[]; // Linker exports
+typedef void (*Func)(void);
+
+extern char _boot[], _cfg[], _cfg_start[], _cfg_end[], _rom[], _ram[], _eod[], _vec[]; // Linker exports
 extern const uint16_t sinedata[];
 extern const Cfg cfgdata;
 extern Cfg cfg;
-extern int throt, ertm, erpm, temp, volt, curr, csum, dshotval, beepval;
+extern int throt, ertm, erpm, temp1, temp2, volt, curr, csum, dshotval, beepval;
 extern char analog, telreq, telmode, flipdir, beacon, dshotext;
 
 void init(void);
 void initio(void);
-void initbec(void);
+void initgpio(void);
 void initled(void);
 void inittelem(void);
+int hallcode(void);
 void ledctl(int x);
 void hsictl(int x);
 void compctl(int x);
 void io_serial(void);
 void io_analog(void);
 void adctrig(void);
-void adcdata(int t, int v, int c, int x);
-void delay(int ms);
+void adcdata(int t, int u, int v, int c, int a);
+void delay(int ms, Func f);
 void kisstelem(void);
 void autotelem(void);
-int execcmd(char *buf);
+int execcmd(char *str);
 char crc8(const char *buf, int len);
 char crc8dvbs2(const char *buf, int len);
 int scale(int x, int a1, int a2, int b1, int b2);
@@ -139,8 +142,22 @@ int calcpid(PID *pid, int x, int y);
 void checkcfg(void);
 int savecfg(void);
 int resetcfg(void);
+void resetcom(void);
 int playmusic(const char *str, int vol);
+void playsound(const char *buf, int vol);
 
 static inline int min(int a, int b) {return a < b ? a : b;}
 static inline int max(int a, int b) {return a > b ? a : b;}
 static inline int clamp(int x, int a, int b) {return min(max(x, a), b);}
+
+// Temperature sensors
+
+static inline int NTC10K3455UP2K(int x) {
+	if (x > 3200) return 0;
+	return (x > 961 ? (x - 1650) * -46 + 74841 : (x - 660) * -83 + 132044) >> 8;
+}
+
+static inline int NTC10K3455LO10K(int x) {
+	if (x < 100) return 0;
+	return (x < 2762 ? (x - 1650) * 36 + 25600 : (x - 3036) * 151 + 107130) >> 8;
+}

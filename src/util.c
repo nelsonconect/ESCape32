@@ -17,22 +17,265 @@
 
 #include "common.h"
 
-#ifdef STM32G4
+#ifndef HALL_MAP
+#elif HALL_MAP == 0xAFB35
+#define HALL1_PORT A
+#define HALL1_PIN1 15
+#define HALL2_PORT B
+#define HALL2_PIN2 3
+#define HALL2_PIN3 5
+#elif HALL_MAP == 0xB358
+#define HALL_PORT B
+#define HALL_PIN1 3
+#define HALL_PIN2 5
+#define HALL_PIN3 8
+#elif HALL_MAP == 0xB450
+#define HALL_PORT B
+#define HALL_PIN1 4
+#define HALL_PIN2 5
+#define HALL_PIN3 0
+#endif
+
+#ifndef BEC_MAP
+#elif BEC_MAP == 0xB35
+#define BEC_PORT B
+#define BEC_PIN1 3
+#define BEC_PIN2 5
+#elif BEC_MAP == 0xCEF
+#define BEC_PORT C
+#define BEC_PIN1 14
+#define BEC_PIN2 15
+#endif
+
+#if LED_MAP == 0xAF
+#define LED1_PORT A
+#define LED1_PIN 15
+#elif LED_MAP == 0xB8
+#define LED1_PORT B
+#define LED1_PIN 8
+#elif LED_MAP == 0xF2AF
+#define LED1_PORT F
+#define LED1_PIN 2
+#define LED2_PORT A
+#define LED2_PIN 15
+#elif LED_MAP == 0xAFB3B4
+#define LED1_PORT A
+#define LED1_PIN 15
+#define LED2_PORT B
+#define LED2_PIN 3
+#define LED3_PORT B
+#define LED3_PIN 4
+#elif LED_MAP == 0xAFB5B3
+#define LED1_PORT A
+#define LED1_PIN 15
+#define LED2_PORT B
+#define LED2_PIN 5
+#define LED3_PORT B
+#define LED3_PIN 3
+#elif LED_MAP == 0xB5B3AF
+#define LED1_PORT B
+#define LED1_PIN 5
+#define LED2_PORT B
+#define LED2_PIN 3
+#define LED3_PORT A
+#define LED3_PIN 15
+#elif LED_MAP == 0xB5B4B3
+#define LED1_PORT B
+#define LED1_PIN 5
+#define LED2_PORT B
+#define LED2_PIN 4
+#define LED3_PORT B
+#define LED3_PIN 3
+#elif LED_MAP == 0xB8B5B3
+#define LED1_PORT B
+#define LED1_PIN 8
+#define LED2_PORT B
+#define LED2_PIN 5
+#define LED3_PORT B
+#define LED3_PIN 3
+#endif
+
+#ifdef LED_INV
+#define LED1_INV
+#define LED2_INV
+#define LED3_INV
+#endif
+
+#ifdef LED_OD
+#define LED1_OD
+#define LED2_OD
+#define LED3_OD
+#endif
+
+#ifndef FLASH_CR_STRT
 #define FLASH_CR_STRT FLASH_CR_START
 #endif
 
-void initbec(void) {
+static char busy;
+
+void initgpio(void) {
+#if defined HALL_MAP && !defined USE_XOR
+#ifdef HALL1_PORT
+#ifdef HALL2_PIN2
+	GPIO(HALL1_PORT, PUPDR) |= 1 << HALL1_PIN1 * 2;
+	GPIO(HALL2_PORT, PUPDR) |= 1 << HALL2_PIN2 * 2 | 1 << HALL2_PIN3 * 2;
+	GPIO(HALL1_PORT, MODER) &= ~(3 << HALL1_PIN1 * 2);
+	GPIO(HALL2_PORT, MODER) &= ~(3 << HALL2_PIN2 * 2 | 3 << HALL2_PIN3 * 2);
+#else
+	GPIO(HALL1_PORT, PUPDR) |= 1 << HALL1_PIN1 * 2 | 1 << HALL1_PIN2 * 2;
+	GPIO(HALL2_PORT, PUPDR) |= 1 << HALL2_PIN3 * 2;
+	GPIO(HALL1_PORT, MODER) &= ~(3 << HALL1_PIN1 * 2 | 3 << HALL1_PIN2 * 2);
+	GPIO(HALL2_PORT, MODER) &= ~(3 << HALL2_PIN3 * 2);
+#endif
+#else
+	GPIO(HALL_PORT, PUPDR) |= 1 << HALL_PIN1 * 2 | 1 << HALL_PIN2 * 2 | 1 << HALL_PIN3 * 2;
+	GPIO(HALL_PORT, MODER) &= ~(3 << HALL_PIN1 * 2 | 3 << HALL_PIN2 * 2 | 3 << HALL_PIN3 * 2);
+#endif
+#endif
 #ifdef BEC_MAP
 	int x = cfg.bec;
-#if BEC_MAP == 0xB3B5
-	GPIOB_ODR |= (x & 1) << 3 | (x & 2) << 4;
-	GPIOB_MODER &= ~0x880; // B3,B5 (output)
-#else // Use SWD pads
-	if (GPIOA_IDR & 0x6000) return; // Active or not connected
-	GPIOA_ODR |= x << 13;
-	GPIOA_OSPEEDR &= ~0x3c000000; // A13,A14 (low speed)
-	GPIOA_PUPDR &= ~0x3c000000; // A13,A14 (no pull-up/pull-down)
-	GPIOA_MODER ^= 0x3c000000; // A13,A14 (output)
+#if BEC_MAP == 0xADE // SWD pins
+	if (!(GPIOA_IDR & 0x6000)) { // External pull-down
+		GPIOA_ODR |= x << 13;
+		GPIOA_OSPEEDR &= ~0x3c000000; // A13,A14 (low speed)
+		GPIOA_PUPDR &= ~0x3c000000; // A13,A14 (no pull-up/pull-down)
+		GPIOA_MODER ^= 0x3c000000; // A13,A14 (output)
+	}
+#else
+#if BEC_PIN2 >= 1
+	GPIO(BEC_PORT, ODR) |= (x & 1) << BEC_PIN1 | (x & 2) << (BEC_PIN2 - 1);
+#else
+	GPIO(BEC_PORT, ODR) |= (x & 1) << BEC_PIN1 | (x & 2) >> (1 - BEC_PIN2);
+#endif
+	GPIO(BEC_PORT, MODER) &= ~(2 << BEC_PIN1 * 2 | 2 << BEC_PIN2 * 2);
+#endif
+#endif
+#ifdef RPM_PIN
+	GPIO(RPM_PORT, MODER) = (GPIO(RPM_PORT, MODER) & ~(3 << RPM_PIN * 2)) | 1 << RPM_PIN * 2;
+#endif
+}
+
+__attribute__((__weak__))
+void initled(void) {
+#ifdef LED1_PORT
+#ifdef LED1_INV
+	GPIO(LED1_PORT, ODR) |= 1 << LED1_PIN;
+#endif
+#ifdef LED1_OD
+	GPIO(LED1_PORT, OTYPER) |= 1 << LED1_PIN;
+#endif
+	GPIO(LED1_PORT, MODER) &= ~(2 << LED1_PIN * 2);
+#endif
+#ifdef LED2_PORT
+#ifdef LED2_INV
+	GPIO(LED2_PORT, ODR) |= 1 << LED2_PIN;
+#endif
+#ifdef LED2_OD
+	GPIO(LED2_PORT, OTYPER) |= 1 << LED2_PIN;
+#endif
+	GPIO(LED2_PORT, MODER) &= ~(2 << LED2_PIN * 2);
+#endif
+#ifdef LED3_PORT
+#ifdef LED3_INV
+	GPIO(LED3_PORT, ODR) |= 1 << LED3_PIN;
+#endif
+#ifdef LED3_OD
+	GPIO(LED3_PORT, OTYPER) |= 1 << LED3_PIN;
+#endif
+	GPIO(LED3_PORT, MODER) &= ~(2 << LED3_PIN * 2);
+#endif
+#ifdef LED4_PORT
+#ifdef LED4_INV
+	GPIO(LED4_PORT, ODR) |= 1 << LED4_PIN;
+#endif
+#ifdef LED4_OD
+	GPIO(LED4_PORT, OTYPER) |= 1 << LED4_PIN;
+#endif
+	GPIO(LED4_PORT, MODER) &= ~(2 << LED4_PIN * 2);
+#endif
+}
+
+#ifdef HALL_MAP
+int hallcode(void) {
+#ifdef HALL1_PORT
+	int x1 = GPIO(HALL1_PORT, IDR);
+	int x2 = GPIO(HALL2_PORT, IDR);
+#ifdef HALL2_PIN2
+#if HALL2_PIN3 >= 2
+#if HALL2_PIN2 >= 1
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x2 & (1 << HALL2_PIN2)) >> (HALL2_PIN2 - 1) | (x2 & (1 << HALL2_PIN3)) >> (HALL2_PIN3 - 2);
+#else
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x2 & (1 << HALL2_PIN2)) << (1 - HALL2_PIN2) | (x2 & (1 << HALL2_PIN3)) >> (HALL2_PIN3 - 2);
+#endif
+#else
+#if HALL2_PIN2 >= 1
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x2 & (1 << HALL2_PIN2)) >> (HALL2_PIN2 - 1) | (x2 & (1 << HALL2_PIN3)) << (2 - HALL2_PIN3);
+#else
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x2 & (1 << HALL2_PIN2)) << (1 - HALL2_PIN2) | (x2 & (1 << HALL2_PIN3)) << (2 - HALL2_PIN3);
+#endif
+#endif
+#else
+#if HALL2_PIN3 >= 2
+#if HALL1_PIN2 >= 1
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x1 & (1 << HALL1_PIN2)) >> (HALL1_PIN2 - 1) | (x2 & (1 << HALL2_PIN3)) >> (HALL2_PIN3 - 2);
+#else
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x1 & (1 << HALL1_PIN2)) << (1 - HALL1_PIN2) | (x2 & (1 << HALL2_PIN3)) >> (HALL2_PIN3 - 2);
+#endif
+#else
+#if HALL1_PIN2 >= 1
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x1 & (1 << HALL1_PIN2)) >> (HALL1_PIN2 - 1) | (x2 & (1 << HALL2_PIN3)) << (2 - HALL2_PIN3);
+#else
+	return (x1 & (1 << HALL1_PIN1)) >> HALL1_PIN1 | (x1 & (1 << HALL1_PIN2)) << (1 - HALL1_PIN2) | (x2 & (1 << HALL2_PIN3)) << (2 - HALL2_PIN3);
+#endif
+#endif
+#endif
+#else
+	int x = GPIO(HALL_PORT, IDR);
+#if HALL_PIN3 >= 2
+#if HALL_PIN2 >= 1
+	return (x & (1 << HALL_PIN1)) >> HALL_PIN1 | (x & (1 << HALL_PIN2)) >> (HALL_PIN2 - 1) | (x & (1 << HALL_PIN3)) >> (HALL_PIN3 - 2);
+#else
+	return (x & (1 << HALL_PIN1)) >> HALL_PIN1 | (x & (1 << HALL_PIN2)) << (1 - HALL_PIN2) | (x & (1 << HALL_PIN3)) >> (HALL_PIN3 - 2);
+#endif
+#else
+#if HALL_PIN2 >= 1
+	return (x & (1 << HALL_PIN1)) >> HALL_PIN1 | (x & (1 << HALL_PIN2)) >> (HALL_PIN2 - 1) | (x & (1 << HALL_PIN3)) << (2 - HALL_PIN3);
+#else
+	return (x & (1 << HALL_PIN1)) >> HALL_PIN1 | (x & (1 << HALL_PIN2)) << (1 - HALL_PIN2) | (x & (1 << HALL_PIN3)) << (2 - HALL_PIN3);
+#endif
+#endif
+#endif
+}
+#endif
+
+__attribute__((__weak__))
+void ledctl(int x) {
+#ifdef LED1_PORT
+#ifdef LED1_INV
+	GPIO(LED1_PORT, BSRR) = x & 1 ? 1 << (LED1_PIN + 16) : 1 << LED1_PIN;
+#else
+	GPIO(LED1_PORT, BSRR) = x & 1 ? 1 << LED1_PIN : 1 << (LED1_PIN + 16);
+#endif
+#endif
+#ifdef LED2_PORT
+#ifdef LED2_INV
+	GPIO(LED2_PORT, BSRR) = x & 2 ? 1 << (LED2_PIN + 16) : 1 << LED2_PIN;
+#else
+	GPIO(LED2_PORT, BSRR) = x & 2 ? 1 << LED2_PIN : 1 << (LED2_PIN + 16);
+#endif
+#endif
+#ifdef LED3_PORT
+#ifdef LED3_INV
+	GPIO(LED3_PORT, BSRR) = x & 4 ? 1 << (LED3_PIN + 16) : 1 << LED3_PIN;
+#else
+	GPIO(LED3_PORT, BSRR) = x & 4 ? 1 << LED3_PIN : 1 << (LED3_PIN + 16);
+#endif
+#endif
+#ifdef LED4_PORT
+#ifdef LED4_INV
+	GPIO(LED4_PORT, BSRR) = x & 8 ? 1 << (LED4_PIN + 16) : 1 << LED4_PIN;
+#else
+	GPIO(LED4_PORT, BSRR) = x & 8 ? 1 << LED4_PIN : 1 << (LED4_PIN + 16);
 #endif
 #endif
 }
@@ -41,7 +284,7 @@ __attribute__((__weak__))
 void hsictl(int x) {
 	int cr = RCC_CR;
 	int tv = (cr & 0xf8) >> 3; // 5 bits
-	RCC_CR = (cr & ~0xf8) | ((tv + x) & 0x1f) << 3;
+	RCC_CR = (cr & ~0xf8) | clamp(tv + x, 0, 0x1f) << 3;
 }
 
 char crc8(const char *buf, int len) {
@@ -121,14 +364,14 @@ int calcpid(PID *pid, int x, int y) {
 }
 
 void checkcfg(void) {
-#ifdef ANALOG
-	cfg.arm = 0;
-#else
+#ifndef ANALOG
 #ifndef ANALOG_CHAN
 	if (IO_ANALOG) cfg.arm = 1; // Ensure low level on startup
 	else
 #endif
 	cfg.arm = !!cfg.arm;
+#else
+	cfg.arm = 0;
 #endif
 #ifdef PWM_ENABLE
 	cfg.damp = 1;
@@ -136,17 +379,10 @@ void checkcfg(void) {
 	cfg.damp = !!cfg.damp;
 #endif
 	cfg.revdir = !!cfg.revdir;
-#ifdef COMP_MAP
 	cfg.brushed = !!cfg.brushed;
 	cfg.timing = clamp(cfg.timing, 1, 31);
 	cfg.sine_range = cfg.sine_range && cfg.damp && !cfg.brushed ? clamp(cfg.sine_range, 5, 25) : 0;
 	cfg.sine_power = clamp(cfg.sine_power, 1, 15);
-#else
-	cfg.brushed = 0;
-	cfg.timing = 0;
-	cfg.sine_range = 0;
-	cfg.sine_power = 0;
-#endif
 	cfg.freq_min = clamp(cfg.freq_min, 16, 48);
 	cfg.freq_max = clamp(cfg.freq_max, cfg.freq_min, 96);
 	cfg.duty_min = clamp(cfg.duty_min, 1, 100);
@@ -155,7 +391,10 @@ void checkcfg(void) {
 	cfg.duty_ramp = clamp(cfg.duty_ramp, 0, 100);
 	cfg.duty_rate = clamp(cfg.duty_rate, 1, 100);
 	cfg.duty_drag = clamp(cfg.duty_drag, 0, 100);
-	cfg.throt_mode = clamp(cfg.throt_mode, 0, IO_ANALOG ? 0 : 2);
+	cfg.duty_lock = cfg.duty_lock && cfg.damp && !cfg.brushed;
+	cfg.throt_mode = clamp(cfg.throt_mode, 0, IO_ANALOG ? 0 : cfg.duty_lock ? 1 : 3);
+	cfg.throt_rev = clamp(cfg.throt_rev, 0, 3);
+	cfg.throt_brk = clamp(cfg.throt_brk, cfg.duty_drag, 100);
 	cfg.throt_set = clamp(cfg.throt_set, 0, cfg.arm ? 0 : 100);
 	cfg.throt_cal = !!cfg.throt_cal;
 	cfg.throt_min = clamp(cfg.throt_min, 900, 1900);
@@ -176,20 +415,27 @@ void checkcfg(void) {
 #endif
 	cfg.telem_mode = clamp(cfg.telem_mode, 0, 4);
 	cfg.telem_phid =
-		cfg.telem_mode == 2 ? clamp(cfg.telem_phid, 1, 3):
+		cfg.telem_mode == 2 ? clamp(cfg.telem_phid, 1, 2):
 		cfg.telem_mode == 3 ? clamp(cfg.telem_phid, 1, 28):
 		cfg.input_mode == 4 ? clamp(cfg.telem_phid, 0, 4) : 0;
 	cfg.telem_poles = clamp(cfg.telem_poles & ~1, 2, 100);
-	cfg.prot_stall = cfg.prot_stall && !cfg.brushed ? clamp(cfg.prot_stall, 1800, 3200) : 0;
+	cfg.prot_stall = cfg.prot_stall && !cfg.brushed ? clamp(cfg.prot_stall, 1500, 3500) : 0;
 	cfg.prot_temp = cfg.prot_temp ? clamp(cfg.prot_temp, 60, 140) : 0;
-#if VOLT_MUL > 0
+#if SENS_CNT >= 3
+	cfg.prot_sens = clamp(cfg.prot_sens, 0, 2);
+#else
+	cfg.prot_sens = 0;
+#endif
+#if SENS_CNT >= 1 && VOLT_MUL > 0
 	cfg.prot_volt = cfg.prot_volt ? clamp(cfg.prot_volt, 28, 38) : 0;
-	cfg.prot_cells = clamp(cfg.prot_cells, 0, 16);
+	cfg.prot_cells = clamp(cfg.prot_cells, 0, 24);
 #else
 	cfg.prot_volt = 0;
 	cfg.prot_cells = 0;
 #endif
-#if CURR_MUL == 0
+#if SENS_CNT >= 2 && CURR_MUL > 0
+	cfg.prot_curr = clamp(cfg.prot_curr, 0, 500);
+#else
 	cfg.prot_curr = 0;
 #endif
 	cfg.volume = clamp(cfg.volume, 0, 100);
@@ -207,24 +453,24 @@ void checkcfg(void) {
 }
 
 int savecfg(void) {
-	if (ertm) return 0;
+	if (ertm || busy) return 0;
 	__disable_irq();
 	FLASH_KEYR = FLASH_KEYR_KEY1;
 	FLASH_KEYR = FLASH_KEYR_KEY2;
 	FLASH_SR = -1; // Clear errors
 	FLASH_CR = FLASH_CR_PER;
-#if defined STM32G0 || defined STM32G4
-	FLASH_CR = FLASH_CR_PER | FLASH_CR_STRT | ((uint32_t)(_cfg - _boot) >> 11) << FLASH_CR_PNB_SHIFT; // Erase page
-#else
+#ifdef STM32F0
 	FLASH_AR = (uint32_t)_cfg;
 	FLASH_CR = FLASH_CR_PER | FLASH_CR_STRT; // Erase page
+#else
+	FLASH_CR = FLASH_CR_PER | FLASH_CR_STRT | ((uint32_t)(_cfg - _boot) >> 11) << FLASH_CR_PNB_SHIFT; // Erase page
 #endif
 	while (FLASH_SR & FLASH_SR_BSY);
 	FLASH_CR = FLASH_CR_PG;
-#if defined STM32G0 || defined STM32G4
-#define T uint32_t
-#else
+#ifdef STM32F0
 #define T uint16_t
+#else
+#define T uint32_t
 #endif
 	T *dst = (T *)_cfg;
 	T *src = (T *)_cfg_start;
@@ -232,17 +478,17 @@ int savecfg(void) {
 #undef T
 	while (src < end) { // Write data
 		*dst++ = *src++;
-#if defined STM32G0 || defined STM32G4
+#ifndef STM32F0
 		*dst++ = *src++;
 #endif
 		while (FLASH_SR & FLASH_SR_BSY);
 	}
 	FLASH_CR = FLASH_CR_LOCK;
 	__enable_irq();
-#if defined STM32G0 || defined STM32G4
-	if (FLASH_SR & (FLASH_SR_PROGERR | FLASH_SR_WRPERR)) return 0;
-#else
+#ifdef STM32F0
 	if (FLASH_SR & (FLASH_SR_PGERR | FLASH_SR_WRPRTERR)) return 0;
+#else
+	if (FLASH_SR & (FLASH_SR_PROGERR | FLASH_SR_WRPERR)) return 0;
 #endif
 	return !memcmp(_cfg, _cfg_start, _cfg_end - _cfg_start);
 }
@@ -254,28 +500,56 @@ int resetcfg(void) {
 	return savecfg();
 }
 
+void resetcom(void) {
+#ifdef PWM_ENABLE
+	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_HIGH | TIM_CCMR1_OC2M_FORCE_HIGH;
+	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_HIGH;
+#else
+	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_LOW | TIM_CCMR1_OC2M_FORCE_LOW;
+	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_LOW;
+#endif
+	int er = TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE;
+#ifdef INVERTED_HIGH
+	er |= TIM_CCER_CC1P | TIM_CCER_CC2P | TIM_CCER_CC3P;
+#endif
+#ifdef PWM_ENABLE
+	er |= TIM_CCER_CC1NP | TIM_CCER_CC2NP | TIM_CCER_CC3NP;
+#endif
+	TIM1_CCER = er;
+	TIM1_EGR = TIM_EGR_UG | TIM_EGR_COMG;
+}
+
+static void delayf(void) {
+	TIM6_EGR = TIM_EGR_UG; // Reset arming timeout
+	if (!(TIM1_SR & TIM_SR_UIF)) return;
+	TIM1_SR = ~TIM_SR_UIF;
+	int a = TIM1_CCR1;
+	int b = TIM1_CCR3;
+	TIM1_CCR1 = b;
+	TIM1_CCR3 = a;
+}
+
 int playmusic(const char *str, int vol) {
-	static const uint16_t arr[] = {30575, 28859, 27240, 25713, 24268, 22906, 21621, 20407, 19261, 18181, 17160, 16196, 15287};
-	static char flag;
+	static const uint16_t arr[] = {15287, 14429, 13619, 12856, 12133, 11452, 10810, 10203, 9630, 9090, 8579, 8097, 7643};
 	char *end;
 	int tmp = strtol(str, &end, 10); // Tempo
-	if (str == end) tmp = 125; // 120BPM by default
+	if (str == end) tmp = 125; // 120 BPM by default
 	else {
 		if (tmp < 10 || tmp > 999) return 0; // Sanity check
 		tmp = 15000 / tmp;
 		str = end;
 	}
-	if (!vol || ertm || flag) return 0;
-	flag = 1;
-	vol <<= 1;
+	if (!vol || ertm || busy) return 0;
+	busy = 1;
+	resetcom();
 #ifdef PWM_ENABLE
-	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_LOW | TIM_CCMR1_OC2PE | TIM_CCMR1_OC2M_PWM1;
-	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_LOW;
-	int er = TIM_CCER_CC1NE | TIM_CCER_CC2E | TIM_CCER_CC3NE;
+	TIM1_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC2M_FORCE_LOW;
+	TIM1_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM1;
+	int er = TIM_CCER_CC1E | TIM_CCER_CC2NE | TIM_CCER_CC3E;
 #else
-	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_HIGH | TIM_CCMR1_OC2PE | TIM_CCMR1_OC2M_PWM1;
-	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_HIGH;
-	int er = TIM_CCER_CC1NE | TIM_CCER_CC2E | TIM_CCER_CC2NE | TIM_CCER_CC3NE;
+	TIM1_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC2M_FORCE_HIGH;
+	TIM1_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM1;
+	int er = TIM_CCER_CC1E | TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3E | TIM_CCER_CC3NE;
 #endif
 #ifdef INVERTED_HIGH
 	er |= TIM_CCER_CC1P | TIM_CCER_CC2P | TIM_CCER_CC3P;
@@ -284,12 +558,15 @@ int playmusic(const char *str, int vol) {
 	er |= TIM_CCER_CC1NP | TIM_CCER_CC2NP | TIM_CCER_CC3NP;
 #endif
 	TIM1_CCER = er;
-	TIM1_PSC = CLK_MHZ / 8 - 1; // 8MHz
+	TIM1_PSC = CLK_MHZ / 8 - 1; // 125ns resolution
 	for (int a, b, c = 0; (a = *str++);) {
 		if (a >= 'a' && a <= 'g') a -= 'c', b = 0; // Low note
 		else if (a >= 'A' && a <= 'G') a -= 'C', b = 1; // High note
-		else if (a == '_') goto update; // Pause
-		else {
+		else if (a == '_') { // Pause
+			TIM1_CCR1 = 0;
+			TIM1_CCR3 = 0;
+			goto update;
+		} else {
 			if (a == '+' && !c++) continue; // Octave up
 			if (a == '-' && c--) continue; // Octave down
 			break; // Invalid specifier
@@ -298,7 +575,8 @@ int playmusic(const char *str, int vol) {
 		if (a > 4) --a;
 		if (*str == '#') ++a, ++str;
 		TIM1_ARR = arr[a] >> (b + c); // Frequency
-		TIM1_CCR2 = vol; // Volume
+		TIM1_CCR1 = (DEAD_TIME + CLK_MHZ / 8 - 1) * 8 / CLK_MHZ + vol; // Volume
+		TIM1_CCR3 = 0;
 	update:
 		TIM1_EGR = TIM_EGR_UG | TIM_EGR_COMG;
 		a = strtol(str, &end, 10); // Duration
@@ -307,17 +585,29 @@ int playmusic(const char *str, int vol) {
 			if (a < 1 || a > 99) break; // Sanity check
 			str = end;
 		}
-		delay(tmp * a);
-		TIM1_CCR2 = 0; // Preload silence
+		delay(tmp * a, delayf);
 	}
+	TIM1_PSC = 0;
+	TIM1_ARR = CLK_KHZ / 24 - 1;
+	resetcom();
+	busy = 0;
+	return !str[-1];
+}
+
+void playsound(const char *buf, int vol) { // AU file format, 8-bit linear PCM, mono
+	const uint32_t *hdr = (const uint32_t *)buf;
+	if (hdr[0] != 0x646e732e || hdr[3] != 0x2000000 || hdr[5] != 0x1000000 || !vol || ertm || busy) return;
+	busy = 1;
+	resetcom();
 #ifdef PWM_ENABLE
-	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_HIGH | TIM_CCMR1_OC2M_FORCE_HIGH;
-	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_HIGH;
+	TIM1_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC2M_FORCE_LOW;
+	TIM1_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM1;
+	int er = TIM_CCER_CC1E | TIM_CCER_CC2NE | TIM_CCER_CC3E;
 #else
-	TIM1_CCMR1 = TIM_CCMR1_OC1M_FORCE_LOW | TIM_CCMR1_OC2M_FORCE_LOW;
-	TIM1_CCMR2 = TIM_CCMR2_OC3M_FORCE_LOW;
+	TIM1_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC2M_FORCE_HIGH;
+	TIM1_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM1;
+	int er = TIM_CCER_CC1E | TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3E | TIM_CCER_CC3NE;
 #endif
-	er = TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE;
 #ifdef INVERTED_HIGH
 	er |= TIM_CCER_CC1P | TIM_CCER_CC2P | TIM_CCER_CC3P;
 #endif
@@ -325,9 +615,26 @@ int playmusic(const char *str, int vol) {
 	er |= TIM_CCER_CC1NP | TIM_CCER_CC2NP | TIM_CCER_CC3NP;
 #endif
 	TIM1_CCER = er;
-	TIM1_PSC = 0;
+	TIM1_CCR1 = 0;
+	TIM1_CCR3 = 0;
 	TIM1_ARR = CLK_KHZ / 24 - 1;
 	TIM1_EGR = TIM_EGR_UG | TIM_EGR_COMG;
-	flag = 0;
-	return !str[-1];
+	TIM6_PSC = 0;
+	TIM6_ARR = CLK_CNT(__builtin_bswap32(hdr[4])) - 1;
+	TIM6_EGR = TIM_EGR_UG;
+	TIM6_CR1 = TIM_CR1_CEN;
+	buf += __builtin_bswap32(hdr[1]);
+	for (int len = __builtin_bswap32(hdr[2]);;) {
+		if (!(TIM6_SR & TIM_SR_UIF)) continue;
+		TIM6_SR = ~TIM_SR_UIF;
+		if (len-- <= 0) break;
+		int8_t x = *buf++;
+		TIM1_CR1 = TIM_CR1_CEN | TIM_CR1_ARPE | TIM_CR1_UDIS;
+		TIM1_CCR1 = DEAD_TIME + ((x + 128) * vol * CLK_MHZ >> 13);
+		TIM1_CCR3 = DEAD_TIME + ((127 - x) * vol * CLK_MHZ >> 13);
+		TIM1_CR1 = TIM_CR1_CEN | TIM_CR1_ARPE;
+	}
+	TIM6_CR1 = 0;
+	resetcom();
+	busy = 0;
 }

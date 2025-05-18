@@ -25,6 +25,15 @@
 #define SENS_CHAN 0xc0
 #endif
 
+#ifndef ANALOG_CHAN
+#define ANALOG_CHAN 0x2 // ADC_IN2 (A2)
+#endif
+
+#ifndef TEMP_CHAN
+#define TEMP_CHAN 0x10 // ADC_IN16 (temp)
+#define TEMP_FUNC(x) (((1440 - (x)) * 2000 >> 11) + 100)
+#endif
+
 #define ADC1_BASE ADC_BASE
 #define COMP_CSR MMIO32(SYSCFG_COMP_BASE + 0x1c)
 #ifdef USE_COMP2
@@ -34,7 +43,7 @@
 #endif
 
 static char len, ain;
-static uint16_t buf[5];
+static uint16_t buf[6];
 
 void init(void) {
 	RCC_APB2RSTR = -1;
@@ -49,6 +58,7 @@ void init(void) {
 	RCC_CFGR &= ~RCC_CFGR_SW_PLL;
 	while (RCC_CFGR & RCC_CFGR_SWS_PLL);
 	RCC_CR &= ~RCC_CR_PLLON;
+	while (RCC_CR & RCC_CR_PLLRDY);
 	RCC_CFGR = 0x8240000; // PLLMUL=11001 (x26)
 	RCC_CR |= RCC_CR_PLLON;
 	while (!(RCC_CR & RCC_CR_PLLRDY));
@@ -61,21 +71,25 @@ void init(void) {
 	GPIOB_PUPDR = 0x00001000; // B6 (pull-up)
 	GPIOA_MODER = 0xebeabfff; // A7 (TIM1_CH1N), A8 (TIM1_CH1), A9 (TIM1_CH2), A10 (TIM1_CH3)
 	GPIOB_MODER = 0xffffeffa; // B0 (TIM1_CH2N), B1 (TIM1_CH3N), B6 (USART1_TX)
+#ifdef HALL_MAP
+	RCC_APB1ENR |= RCC_APB1ENR_TIM3EN;
+	GPIOB_AFRL |= 0x10000; // B4 (TIM3_CH1)
+	GPIOB_MODER &= ~0x100; // B4 (TIM3_CH1)
+#endif
 #ifndef ANALOG
 #ifdef IO_PA2
 	RCC_APB2ENR |= RCC_APB2ENR_TIM15EN;
 	GPIOA_PUPDR |= 0x10; // A2 (pull-up)
 	GPIOA_MODER &= ~0x10; // A2 (TIM15_CH1)
+	nvic_set_priority(NVIC_TIM15_IRQ, 0x40);
 #else
 	RCC_APB1ENR |= RCC_APB1ENR_TIM3EN;
 	GPIOB_AFRL |= 0x10000; // B4 (TIM3_CH1)
 	GPIOB_PUPDR |= 0x100; // B4 (pull-up)
 	GPIOB_MODER &= ~0x100; // B4 (TIM3_CH1)
-#endif
-#endif
-
 	nvic_set_priority(NVIC_TIM3_IRQ, 0x40);
-	nvic_set_priority(NVIC_TIM15_IRQ, 0x40);
+#endif
+#endif
 	nvic_set_priority(NVIC_USART1_IRQ, 0x80);
 	nvic_set_priority(NVIC_USART2_IRQ, 0x40);
 	nvic_set_priority(NVIC_DMA1_CHANNEL1_IRQ, 0x80); // ADC
@@ -93,11 +107,17 @@ void init(void) {
 	nvic_enable_irq(NVIC_DMA1_CHANNEL2_3_DMA2_CHANNEL1_2_IRQ);
 	nvic_enable_irq(NVIC_DMA1_CHANNEL4_7_DMA2_CHANNEL3_5_IRQ);
 
+	TIM1_DIER = TIM_DIER_CC1IE; // ADC trigger
+	TIM1_SMCR = TIM_SMCR_TS_ITR1; // TRGI=TIM2
+	TIM2_CR2 = TIM_CR2_MMS_COMPARE_OC1REF; // TRGO=OC1REF
+	TIM2_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM2; // Inverted PWM on OC1
+	TIM2_CCMR2 = TIM_CCMR2_CC4S_IN_TI4;
+	TIM2_CCER = TIM_CCER_CC4E; // IC4 on rising edge on TI4 (COMP_OUT)
+
 	RCC_CR2 |= RCC_CR2_HSI14ON; // Enable IRC28M
 	while (!(RCC_CR2 & RCC_CR2_HSI14RDY));
 	ADC1_CR2 = ADC_CR2_ADON | ADC_CR2_TSVREFE;
 	TIM6_ARR = CLK_MHZ - 1;
-	TIM6_SR = ~TIM_SR_UIF;
 	TIM6_CR1 = TIM_CR1_CEN | TIM_CR1_OPM;
 	while (TIM6_CR1 & TIM_CR1_CEN); // Wait for 1us (RM 11.4.1)
 	ADC1_CR2 |= ADC_CR2_CAL;
@@ -108,21 +128,14 @@ void init(void) {
 	ADC1_SQR3 = SENS_CHAN;
 	len = SENS_CNT;
 	if (IO_ANALOG) {
-		ADC1_SQR3 |= AIN_CHAN << (len++ * 5);
+		ADC1_SQR3 |= ANALOG_CHAN << (len++ * 5);
 		ain = 1;
 	}
-	ADC1_SQR3 |= 0x230 << (len * 5); // CH17 (vref), CH16 (temp)
+	ADC1_SQR3 |= (TEMP_CHAN | 0x220) << (len * 5); // ADC_IN17 (vref)
 	len += 2;
 	ADC1_SQR1 = (len - 1) << ADC_SQR1_L_LSB;
 	DMA1_CPAR(1) = (uint32_t)&ADC1_DR;
 	DMA1_CMAR(1) = (uint32_t)buf;
-
-	TIM1_DIER = TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC4IE; // Software comparator blanking, ADC trigger
-	TIM1_SMCR = TIM_SMCR_TS_ITR1; // TRGI=TIM2
-	TIM2_CR2 = TIM_CR2_MMS_COMPARE_OC1REF; // TRGO=OC1REF
-	TIM2_CCMR1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM2; // Inverted PWM on OC1
-	TIM2_CCMR2 = TIM_CCMR2_CC4S_IN_TI4;
-	TIM2_CCER = TIM_CCER_CC4E; // IC4 on rising edge on TI4 (COMP_OUT)
 }
 
 void compctl(int x) {
@@ -191,15 +204,17 @@ void dma1_channel1_isr(void) {
 	DMA1_IFCR = DMA_IFCR_CTCIF(1);
 	DMA1_CCR(1) = 0;
 	ADC1_CR2 = ADC_CR2_ADON | ADC_CR2_TSVREFE;
-	int i = 0, v = 0, c = 0, x = 0;
-#if SENS_CNT == 2
+	int i = 0, u = 0, v = 0, c = 0, a = 0;
+#if SENS_CNT >= 2
 	c = buf[i++];
 #endif
-#if SENS_CNT > 0
+#if SENS_CNT >= 1
 	v = buf[i++];
 #endif
-	if (ain) x = buf[i++];
+#if SENS_CNT >= 3
+	u = buf[i++];
+#endif
+	if (ain) a = buf[i++];
 	int r = 4914000 / buf[i + 1];
-	int t = (1440 - (buf[i] * r >> 12)) * 400 / 408 + 100;
-	adcdata(t, v * r >> 12, c * r >> 12, x * r >> 12);
+	adcdata(TEMP_FUNC(buf[i] * r >> 12), u * r >> 12, v * r >> 12, c * r >> 12, a * r >> 12);
 }

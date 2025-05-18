@@ -25,17 +25,40 @@
 #define SENS_CHAN 0x5
 #elif SENS_MAP == 0xA6 // A6 (volt)
 #define SENS_CHAN 0x6
+#elif SENS_MAP == 0xA1A5 // A1 (volt), A5 (curr)
+#define SENS_CHAN 0x15
 #elif SENS_MAP == 0xA5A4 // A5 (volt), A4 (curr)
 #define SENS_CHAN 0x54
 #elif SENS_MAP == 0xA6A4 // A6 (volt), A4 (curr)
 #define SENS_CHAN 0x64
+#elif SENS_MAP == 0xA6A5A4 // A6 (temp), A5 (volt), A4 (curr)
+#define SENS_CHAN 0x654
+#endif
+
+#ifndef ANALOG_CHAN
+#ifdef IO_PA6
+#define ANALOG_CHAN 0x6 // ADC_IN6 (A6)
+#else
+#define ANALOG_CHAN 0x2 // ADC_IN2 (A2)
+#endif
+#endif
+
+#ifdef TEMP_CHAN
+#define TEMP_SHIFT 12
+#else
+#define TEMP_SHIFT 0
+#define TEMP_CHAN 0xc // ADC_IN12 (temp)
+#define TEMP_FUNC(x) (((x) / 3000 - ST_TSENSE_CAL1_30C) * 400 / (ST_TSENSE_CAL2_130C - ST_TSENSE_CAL1_30C) + 120)
 #endif
 
 #define COMP1_CSR MMIO32(COMP_BASE + 0x0)
 #define COMP2_CSR MMIO32(COMP_BASE + 0x4)
 
 static char len, ain;
-static uint16_t buf[10];
+static uint16_t buf[6];
+#ifdef LED_WS2812
+static uint16_t led[5];
+#endif
 
 void init(void) {
 	RCC_AHBRSTR = -1;
@@ -44,12 +67,38 @@ void init(void) {
 	RCC_AHBRSTR = 0;
 	RCC_APBRSTR1 = 0;
 	RCC_APBRSTR2 = 0;
-	RCC_IOPENR = 0x3; // GPIOAEN=1, GPIOBEN=1
+	RCC_IOPENR = 0x27; // GPIOAEN=1, GPIOBEN=1, GPIOCEN=1, GPIOFEN=1
 	RCC_AHBENR = RCC_AHBENR_DMAEN | RCC_AHBENR_FLASHEN;
 	RCC_APBENR1 = RCC_APBENR1_TIM2EN | RCC_APBENR1_TIM6EN | RCC_APBENR1_WWDGEN;
 	RCC_APBENR2 = RCC_APBENR2_SYSCFGEN | RCC_APBENR2_TIM1EN | RCC_APBENR2_USART1EN | RCC_APBENR2_ADCEN;
 	SYSCFG_CFGR1 = SYSCFG_CFGR1_PA11_RMP | SYSCFG_CFGR1_PA12_RMP; // A11->A9, A12->A10
 	SCB_VTOR = (uint32_t)_rom; // Set vector table address
+
+#ifdef USE_HSE
+	if (!cfg.throt_cal) {
+		TIM6_PSC = CLK_MHZ - 1; // 1us resolution
+		TIM6_ARR = 9999;
+		TIM6_EGR = TIM_EGR_UG;
+		TIM6_SR = ~TIM_SR_UIF;
+		TIM6_CR1 = TIM_CR1_CEN | TIM_CR1_OPM;
+		RCC_CR |= RCC_CR_HSEON;
+		while (!(RCC_CR & RCC_CR_HSERDY)) {
+			if (!(TIM6_CR1 & TIM_CR1_CEN)) { // Timeout 10ms
+				RCC_CR &= ~RCC_CR_HSEON;
+				goto skip;
+			}
+		}
+		RCC_CFGR = RCC_CFGR_SW_HSE;
+		while ((RCC_CFGR & RCC_CFGR_SWS_MASK << RCC_CFGR_SWS_SHIFT) != RCC_CFGR_SWS_HSE << RCC_CFGR_SWS_SHIFT);
+		RCC_CR &= ~RCC_CR_PLLON;
+		while (RCC_CR & RCC_CR_PLLRDY);
+		RCC_PLLCFGR = RCC_PLLCFGR_PLLSRC_HSE | (128 / USE_HSE) << RCC_PLLCFGR_PLLN_SHIFT | RCC_PLLCFGR_PLLREN | 1 << RCC_PLLCFGR_PLLR_SHIFT;
+		RCC_CR |= RCC_CR_PLLON;
+		while (!(RCC_CR & RCC_CR_PLLRDY));
+		RCC_CFGR = RCC_CFGR_SW_PLLRCLK;
+	}
+skip:
+#endif
 
 	// Default GPIO state - analog input
 	GPIOA_AFRL = 0x20000000; // A7 (TIM1_CH1N)
@@ -65,12 +114,18 @@ void init(void) {
 	GPIOB_AFRL |= 0x20; // B1 (TIM1_CH3N)
 	GPIOB_MODER &= ~0x4; // B1 (TIM1_CH3N)
 #endif
+#ifdef HALL_MAP
+	RCC_APBENR1 |= RCC_APBENR1_TIM3EN;
+	GPIOC_AFRL |= 0x1000000; // C6 (TIM3_CH1)
+	GPIOC_MODER &= ~0x1000; // C6 (TIM3_CH1)
+#endif
 #ifndef ANALOG
 #ifdef IO_PA2
 	RCC_APBENR2 |= RCC_APBENR2_TIM15EN;
 	GPIOA_AFRL |= 0x500; // A2 (TIM15_CH1)
 	GPIOA_PUPDR |= 0x10; // A2 (pull-up)
 	GPIOA_MODER &= ~0x10; // A2 (TIM15_CH1)
+	nvic_set_priority(NVIC_TIM15_IRQ, 0x40);
 #else
 	RCC_APBENR1 |= RCC_APBENR1_TIM3EN;
 #ifdef IO_PA6
@@ -82,11 +137,9 @@ void init(void) {
 	GPIOB_PUPDR |= 0x100; // B4 (pull-up)
 	GPIOB_MODER &= ~0x100; // B4 (TIM3_CH1)
 #endif
-#endif
-#endif
-
 	nvic_set_priority(NVIC_TIM34_IRQ, 0x40);
-	nvic_set_priority(NVIC_TIM15_IRQ, 0x40);
+#endif
+#endif
 	nvic_set_priority(NVIC_USART1_IRQ, 0x80);
 	nvic_set_priority(NVIC_USART2_LPUART2_IRQ, 0x40);
 	nvic_set_priority(NVIC_DMA1_CHANNEL1_IRQ, 0x40); // TIM3 or TIM15 or USART2_RX
@@ -112,10 +165,22 @@ void init(void) {
 	DMAMUX1_CxCR(3) = DMAMUX_CxCR_DMAREQ_ID_USART1_TX;
 	DMAMUX1_CxCR(4) = DMAMUX_CxCR_DMAREQ_ID_ADC;
 
+	TIM1_SMCR = TIM_SMCR_TS_ITR1; // TRGI=TIM2
+	TIM2_CR2 = TIM_CR2_MMS_COMPARE_OC3REF; // TRGO=OC3REF
+	TIM2_CCMR1 = TIM_CCMR1_CC2S_IN_TI2;
+	TIM2_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM2; // Inverted PWM on OC3
+	TIM2_CCER = TIM_CCER_CC2E; // IC2 on rising edge on TI2 (COMP2_OUT)
+#if defined IO_PA2 || defined IO_PA6
+	TIM2_CCMR1 |= TIM_CCMR1_CC1S_IN_TI1;
+	TIM2_CCER |= TIM_CCER_CC1E; // IC1 on rising edge on TI1 (COMP1_OUT)
+#endif
+
 	ADC_CFGR2(ADC1) = ADC_CFGR2_CKMODE_PCLK_DIV4 << ADC_CFGR2_CKMODE_SHIFT;
 	ADC_CCR(ADC1) = ADC_CCR_VREFEN | ADC_CCR_TSEN;
 	ADC_CR(ADC1) = ADC_CR_ADVREGEN;
+	TIM6_PSC = 0;
 	TIM6_ARR = CLK_KHZ / 50 - 1;
+	TIM6_EGR = TIM_EGR_UG;
 	TIM6_SR = ~TIM_SR_UIF;
 	TIM6_CR1 = TIM_CR1_CEN | TIM_CR1_OPM;
 	while (TIM6_CR1 & TIM_CR1_CEN); // Wait for 20us (RM 15.3.2)
@@ -128,24 +193,14 @@ void init(void) {
 	ADC_CHSELR(ADC1) = SENS_CHAN;
 	len = SENS_CNT;
 	if (IO_ANALOG) {
-		ADC_CHSELR(ADC1) |= AIN_CHAN << (len++ << 2);
+		ADC_CHSELR(ADC1) |= ANALOG_CHAN << (len++ << 2);
 		ain = 1;
 	}
-	ADC_CHSELR(ADC1) |= 0xfdc << (len << 2); // CH13 (vref), CH12 (temp)
+	ADC_CHSELR(ADC1) |= (TEMP_CHAN | 0xfd0) << (len << 2); // ADC_IN13 (vref)
 	len += 2;
 	while (!(ADC_ISR(ADC1) & ADC_ISR_CCRDY));
 	DMA1_CPAR(4) = (uint32_t)&ADC_DR(ADC1);
 	DMA1_CMAR(4) = (uint32_t)buf;
-
-	TIM1_SMCR = TIM_SMCR_TS_ITR1; // TRGI=TIM2
-	TIM2_CR2 = TIM_CR2_MMS_COMPARE_OC3REF; // TRGO=OC3REF
-	TIM2_CCMR1 = TIM_CCMR1_CC2S_IN_TI2;
-	TIM2_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM2; // Inverted PWM on OC3
-	TIM2_CCER = TIM_CCER_CC2E; // IC2 on rising edge on TI2 (COMP2_OUT)
-#if defined IO_PA2 || defined IO_PA6
-	TIM2_CCMR1 |= TIM_CCMR1_CC1S_IN_TI1;
-	TIM2_CCER |= TIM_CCER_CC1E; // IC1 on rising edge on TI1 (COMP1_OUT)
-#endif
 }
 
 #ifdef LED_WS2812
@@ -161,16 +216,16 @@ void initled(void) {
 	TIM16_RCR = 7;
 	DMAMUX1_CxCR(6) = DMAMUX_CxCR_DMAREQ_ID_TIM16_CH1;
 	DMA1_CPAR(6) = (uint32_t)&TIM16_CCR1;
-	DMA1_CMAR(6) = (uint32_t)(buf + 5);
+	DMA1_CMAR(6) = (uint32_t)led;
 }
 
 void ledctl(int x) {
 	if (DMA1_CCR(6) & DMA_CCR_EN) return;
-	buf[5] = x & 2 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Green
-	buf[6] = x & 1 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Red
-	buf[7] = x & 4 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Blue
-	buf[8] = 0;
-	buf[9] = 0;
+	led[0] = x & 2 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Green
+	led[1] = x & 1 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Red
+	led[2] = x & 4 ? CLK_CNT(1250000) : CLK_CNT(2500000); // Blue
+	led[3] = 0;
+	led[4] = 0;
 	DMA1_CNDTR(6) = 5;
 	DMA1_CCR(6) = DMA_CCR_EN | DMA_CCR_TCIE | DMA_CCR_DIR | DMA_CCR_MINC | DMA_CCR_PSIZE_16BIT | DMA_CCR_MSIZE_16BIT;
 	TIM16_DIER = TIM_DIER_CC1DE;
@@ -182,7 +237,7 @@ void ledctl(int x) {
 void hsictl(int x) {
 	int cr = RCC_ICSCR;
 	int tv = (cr & 0x7f00) >> 8; // 7 bits
-	RCC_ICSCR = (cr & ~0x7f00) | ((tv + x) & 0x7f) << 8;
+	RCC_ICSCR = (cr & ~0x7f00) | clamp(tv + x, 0, 0x7f) << 8;
 }
 
 void compctl(int x) {
@@ -290,15 +345,17 @@ void dma1_channel4_7_dmamux_isr(void) {
 #endif
 	DMA1_IFCR = DMA_IFCR_CTCIF(4);
 	DMA1_CCR(4) = 0;
-	int i = 0, v = 0, c = 0, x = 0;
-#if SENS_CNT == 2
+	int i = 0, u = 0, v = 0, c = 0, a = 0;
+#if SENS_CNT >= 2
 	c = buf[i++];
 #endif
-#if SENS_CNT > 0
+#if SENS_CNT >= 1
 	v = buf[i++];
 #endif
-	if (ain) x = buf[i++];
+#if SENS_CNT >= 3
+	u = buf[i++];
+#endif
+	if (ain) a = buf[i++];
 	int r = ST_VREFINT_CAL * 3000 / buf[i + 1];
-	int t = (buf[i] * r / 3000 - ST_TSENSE_CAL1_30C) * 400 / (ST_TSENSE_CAL2_130C - ST_TSENSE_CAL1_30C) + 120;
-	adcdata(t, v * r >> 12, c * r >> 12, x * r >> 12);
+	adcdata(TEMP_FUNC(buf[i] * r >> TEMP_SHIFT), u * r >> 12, v * r >> 12, c * r >> 12, a * r >> 12);
 }

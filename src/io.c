@@ -40,10 +40,7 @@ static void sbusdma(void);
 static void crsfirq(void);
 static char rxlen;
 #endif
-
-static void (*ioirq)(void);
-static void (*iodma)(void);
-
+static Func ioirq, iodma;
 static char dshotinv, iobuf[1024];
 static uint16_t dshotarr1, dshotarr2, dshotbuf1[32], dshotbuf2[23] = {-1, -1, 0, -1, 0, -1, -1, 0, -1, 0, -1, -1, 0, -1, 0, -1, 0, -1, -1, -1};
 
@@ -70,7 +67,7 @@ static void entryirq(void) {
 			n = 0;
 			return;
 		}
-		if (++c < 8) return; // Wait for ~500ms before entering CLI
+		if (++c < 16) return; // Wait for ~1s before entering CLI
 		ioirq = cliirq;
 #ifdef IO_PA2
 		io_serial();
@@ -143,7 +140,7 @@ static void entryirq(void) {
 				USART2_CR2 |= USART_CR2_RXINV | USART_CR2_TXINV;
 				GPIOA_PUPDR = (GPIOA_PUPDR & ~0x30) | 0x20; // A2 (pull-down)
 #endif
-				TIM15_PSC = CLK_MHZ / 8 - 1; // 8MHz
+				TIM15_PSC = CLK_MHZ / 8 - 1; // 125ns resolution
 				TIM15_ARR = -1;
 				TIM15_EGR = TIM_EGR_UG;
 				TIM15_CR1 = TIM_CR1_CEN | TIM_CR1_ARPE;
@@ -173,18 +170,18 @@ static void entryirq(void) {
 		n = 0;
 		return;
 	}
-	int m = 3;
+	int m = 2;
 	while (t >= CLK_CNT(800000)) t >>= 1, --m;
 	if (d != m) {
 		d = m;
 		n = 1;
 		return;
 	}
-	if (m < 1 || n < 4) return;
+	if (m < 0 || n < 4) return;
 	ioirq = dshotirq;
 	iodma = dshotdma;
-	dshotarr1 = CLK_CNT(m * 150000) - 1;
-	dshotarr2 = CLK_CNT(m * 375000) - 1;
+	dshotarr1 = CLK_CNT(150000 << m) - 1;
+	dshotarr2 = CLK_CNT(375000 << m) - 1;
 	TIM_CCER(IOTIM) = 0;
 	TIM_SMCR(IOTIM) = TIM_SMCR_SMS_RM | TIM_SMCR_TS_TI1F_ED; // Reset on any edge on TI1
 	TIM_CCMR1(IOTIM) = TIM_CCMR1_CC1S_IN_TRC | TIM_CCMR1_IC1F_CK_INT_N_8;
@@ -195,26 +192,28 @@ static void entryirq(void) {
 	DMA1_CMAR(IOTIM_DMA) = (uint32_t)dshotbuf1;
 }
 
-static void calibirq(void) { // Align pulse period to the nearest millisecond via HSI trimming within 6.25% margin
+static void calibirq(void) {
 	static int n, q, x, y;
-	if (!cfg.throt_cal) goto done;
 	int p = TIM_CCR1(IOTIM); // Pulse period
-	if (p < 2000) return; // Invalid signal
-	IWDG_KR = IWDG_KR_RESET;
-	q += p - ((p + 500) / 1000) * 1000; // Cumulative error
-	if (++n & 3) return;
-	if (q > x) { // Slow down
-		if ((q << 3) > p) goto done;
-		y = -q;
-		hsictl(-1);
-	} else if (q < y) { // Speed up
-		if ((q << 3) < -p) goto done;
-		x = -q;
-		hsictl(1);
-	} else goto done;
-	q = 0;
-	return;
-done:
+	if (cfg.throt_cal && // 50/100/125/200/250/333/500Hz 11/22ms servo PWM within 8% margin
+		((p < 22880 && p > 21120) || (p < 20800 && p > 19200) || (p < 11440 && p > 10560) || (p < 10400 && p > 9600) || (p < 8320 && p > 7680) ||
+		(p < 5200 && p > 4800) || (p < 4160 && p > 3840) || (p < 3120 && p > 2880) || (p < 2080 && p > 1920))) {
+		IWDG_KR = IWDG_KR_RESET;
+		q += p - ((p + 500) / 1000) * 1000; // Cumulative error
+		if (++n & 3) return;
+		if (q > x) { // Slow down
+			y = -q;
+			q = 0;
+			hsictl(-1);
+			return;
+		}
+		if (q < y) { // Speed up
+			x = -q;
+			q = 0;
+			hsictl(1);
+			return;
+		}
+	}
 	ioirq = servoirq;
 	TIM_CCMR1(IOTIM) = TIM_CCMR1_CC1S_IN_TI1 | TIM_CCMR1_IC1F_DTF_DIV_8_N_8 | TIM_CCMR1_CC2S_IN_TI1 | TIM_CCMR1_IC2F_DTF_DIV_8_N_8;
 	TIM_CCER(IOTIM) = TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC2P; // IC1 on rising edge on TI1, IC2 on falling edge on TI1
@@ -324,7 +323,6 @@ static void dshotdma(void) {
 		TIM_SMCR(IOTIM) = 0;
 		TIM_CCMR1(IOTIM) = 0; // Disable OC before enabling PWM to force OC1REF update (RM: OC1M, note #2)
 		TIM_CCMR1(IOTIM) = TIM_CCMR1_OC1PE | TIM_CCMR1_OC1M_PWM2;
-		TIM_CCER(IOTIM) = TIM_CCER_CC1E; // Enable output as soon as possible
 		TIM_CR2(IOTIM) = TIM_CR2_CCDS; // CC1 DMA request on UEV using the same DMA channel
 		DMA1_CCR(IOTIM_DMA) = 0;
 		DMA1_CMAR(IOTIM_DMA) = (uint32_t)dshotbuf2;
@@ -336,6 +334,7 @@ static void dshotdma(void) {
 		TIM_EGR(IOTIM) = TIM_EGR_UG; // Update registers and trigger DMA to preload the first bit
 		TIM_EGR(IOTIM); // Ensure UEV has happened
 		TIM_ARR(IOTIM) = dshotarr2; // Preload bit time
+		TIM_CCER(IOTIM) = TIM_CCER_CC1E; // Enable output
 		__enable_irq();
 	}
 	int x = 0;
@@ -467,15 +466,11 @@ static void dshotdma(void) {
 			cfg.duty_ramp = x * 10;
 			beepval = x;
 			break;
-		case 43: // Increase duty cycle slew rate
+		case 43: // Select duty cycle slew rate
 			if (cnt != 6) break;
-			if ((x = cfg.duty_rate) < 100 && ++x > 10) x = (x + 4) / 5 * 5;
-			beepval = cfg.duty_rate = x;
-			break;
-		case 44: // Decrease duty cycle slew rate
-			if (cnt != 6) break;
-			if ((x = cfg.duty_rate) > 1 && --x > 10) x = x / 5 * 5;
-			beepval = cfg.duty_rate = x;
+			if ((x = cfg.duty_rate / 10 + 1) > 10) x = 1;
+			cfg.duty_rate = x * 10;
+			beepval = x;
 			break;
 		case 47: // Reset settings
 			if (cnt != 6) break;
@@ -545,7 +540,7 @@ static int serialreq(char a, int x) {
 			throt = x;
 			break;
 		case 0x2: // Reversed motor direction
-			cfg.revdir = !!x;
+			flipdir = !!x;
 			break;
 		case 0x3: // Drag brake amount
 			cfg.duty_drag = min(x, 100);
@@ -558,22 +553,24 @@ static int serialreq(char a, int x) {
 	}
 	switch (a >> 4) {
 		case 0x8: // Combined telemetry
-			iobuf[0] = temp;
-			iobuf[1] = volt;
-			iobuf[2] = volt >> 8;
-			iobuf[3] = curr;
-			iobuf[4] = curr >> 8;
-			iobuf[5] = csum;
-			iobuf[6] = csum >> 8;
-			iobuf[7] = x = min(ertm, 0xffff);
-			iobuf[8] = x >> 8;
-			iobuf[9] = crc8(iobuf, 9);
-			return 10;
+			iobuf[0] = temp1;
+			iobuf[1] = temp2;
+			iobuf[2] = volt;
+			iobuf[3] = volt >> 8;
+			iobuf[4] = curr;
+			iobuf[5] = curr >> 8;
+			iobuf[6] = csum;
+			iobuf[7] = csum >> 8;
+			iobuf[8] = x = min(ertm, 0xffff);
+			iobuf[9] = x >> 8;
+			iobuf[10] = crc8(iobuf, 10);
+			return 11;
 		case 0x9: return serialresp(min(ertm, 0xffff)); // Electrical revolution time (us)
-		case 0xa: return serialresp(temp); // Temperature (C)
-		case 0xb: return serialresp(volt); // Voltage (V/100)
-		case 0xc: return serialresp(curr); // Current (A/100)
-		case 0xd: return serialresp(csum); // Consumption (mAh)
+		case 0xa: return serialresp(temp1); // ESC temperature (C)
+		case 0xb: return serialresp(temp2); // Motor temperature (C)
+		case 0xc: return serialresp(volt); // Voltage (V/100)
+		case 0xd: return serialresp(curr); // Current (A/100)
+		case 0xe: return serialresp(csum); // Consumption (mAh)
 	}
 	return 0;
 }
@@ -646,22 +643,22 @@ static void sbusrx(void) {
 
 static void sbustx(void) {
 	static const char slot[] = {
-		0xc3, 0x23, 0xa3, 0x63, 0xe3, // 3..7
-		0xd3, 0x33, 0xb3, 0x73, 0xf3, // 11..15
-		0xcb, 0x2b, 0xab, 0x6b, 0xeb, // 19..23
-		0xdb, 0x3b, 0xbb, 0x7b, 0xfb, // 27..31
+		0x43, 0xc3, 0x23, 0xa3, 0x63, 0xe3, // 2..7
+		0x53, 0xd3, 0x33, 0xb3, 0x73, 0xf3, // 10..15
+		0x4b, 0xcb, 0x2b, 0xab, 0x6b, 0xeb, // 18..23
+		0x5b, 0xdb, 0x3b, 0xbb, 0x7b, 0xfb, // 26..31
 	};
 	static int n;
 	int a = 0, b = 0;
 	TIM15_SR = ~TIM_SR_UIF;
 	switch (n) {
-		case 0: // SBS-01T (temperature)
-			a = temp + 100;
+		case 0: // SBS-01T (ESC temperature)
+			a = temp1 + 100;
 			b = a >> 8 | 0x80;
 			break;
-		case 1: // SBS-01R (RPM)
-			a = min(erpm / (cfg.telem_poles * 3), 0xffff);
-			b = a >> 8;
+		case 1: // SBS-01T (motor temperature)
+			a = temp2 + 100;
+			b = a >> 8 | 0x80;
 			break;
 		case 2: // SBS-01C (current)
 			b = curr;
@@ -675,14 +672,18 @@ static void sbustx(void) {
 			b = csum;
 			a = b >> 8;
 			break;
+		case 5: // SBS-01R (RPM)
+			a = min(erpm / (cfg.telem_poles * 3), 0xffff);
+			b = a >> 8;
+			break;
 	}
-	iobuf[0] = slot[n + (cfg.telem_phid - 1) * 5];
+	iobuf[0] = slot[n + (cfg.telem_phid - 1) * 6];
 	iobuf[1] = a;
 	iobuf[2] = b;
 	DMA1_CCR(USART2_TX_DMA) = 0;
 	DMA1_CNDTR(USART2_TX_DMA) = 3;
 	DMA1_CCR(USART2_TX_DMA) = DMA_CCR_EN | DMA_CCR_DIR | DMA_CCR_MINC | DMA_CCR_PSIZE_8BIT | DMA_CCR_MSIZE_8BIT;
-	if (++n < 5) return;
+	if (++n < 6) return;
 	ioirq = sbusrx;
 	n = 0;
 }
@@ -724,13 +725,9 @@ static void crsfirq(void) {
 	USART2_RQR = USART_RQR_RXFRQ; // Clear RXNE
 	USART2_ICR = USART_ICR_IDLECF | USART_ICR_ORECF;
 #endif
-	if (USART2_CR1 & USART_CR1_RXNEIE) { // Read until idle
-		USART2_CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_IDLEIE;
-		return;
-	}
 	int len = 64 - DMA1_CNDTR(USART2_RX_DMA);
 	USART2_CR3 = USART_CR3_HDSEL | USART_CR3_DMAT | USART_CR3_DMAR;
-	USART2_CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
+	USART2_CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_IDLEIE;
 	DMA1_CCR(USART2_RX_DMA) = 0;
 	DMA1_CNDTR(USART2_RX_DMA) = 64;
 	DMA1_CCR(USART2_RX_DMA) = DMA_CCR_EN | DMA_CCR_MINC | DMA_CCR_PSIZE_8BIT | DMA_CCR_MSIZE_8BIT;
